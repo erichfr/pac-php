@@ -2,77 +2,44 @@
 
 namespace App\Http\Controllers;
 
-use App\Events\GameStateUpdated;
-use App\Services\GameMapService;
-use App\Services\GhostAI;
-use Illuminate\View\View;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
+use App\Services\GameMapService;
+use App\Services\GhostAI;
+use App\Events\GameStateUpdated;
+use Illuminate\View\View;
 
 class GameController extends Controller
 {
     public function index(GameMapService $mapService): View
     {
-        // Pegamos o mapa que definimos no Service
         $grid = $mapService->getInitialGrid();
-
         return view('game', compact('grid'));
-    }
-
-    // No método move() do GameController
-    public function move(Request $request, GhostAI $ghostAI, GameMapService $mapService)
-    {
-        $grid = Cache::remember('game_grid', 3600, fn() => $mapService->getInitialGrid());
-        $score = Cache::get('game_score', 0);
-
-        $pacman = $request->input('pacman');
-        $ghost = $request->input('ghost');
-
-        // --- LÓGICA DE TELETRANSPORTE (Túneis) ---
-        if ($pacman['x'] < 0) $pacman['x'] = 20;
-        if ($pacman['x'] > 20) $pacman['x'] = 0;
-
-        // --- LÓGICA DE COMER (Imediata no PHP) ---
-        if (isset($grid[$pacman['y']][$pacman['x']])) {
-            if ($grid[$pacman['y']][$pacman['x']] === 0) { // Pastilha
-                $grid[$pacman['y']][$pacman['x']] = 2;
-                $score += 10;
-            }
-        }
-
-        $nextGhostMove = $ghostAI->getNextMove($ghost, $pacman, $grid);
-
-        Cache::put('game_grid', $grid, 3600);
-        Cache::put('game_score', $score, 3600);
-
-        broadcast(new GameStateUpdated($pacman, $nextGhostMove, $score, $grid));
-
-        return response()->json(['score' => $score]);
     }
 
     public function tick(Request $request, GhostAI $ghostAI, GameMapService $mapService)
     {
-        // Recupera o estado do cache
-        $grid = Cache::get('game_grid', $mapService->getInitialGrid());
-        $score = Cache::get('game_score', 0);
+        try {
+            $pacman = $request->input('pacman');
+            $ghost = $request->input('ghost');
 
-        $pacman = $request->input('pacman');
-        $ghost = $request->input('ghost');
+            if (!$pacman || !$ghost) return response()->json(['error' => 'No data'], 400);
 
-        // IA do Fantasma
-        $nextGhostMove = $ghostAI->getNextMove($ghost, $pacman, $grid);
+            $grid = Cache::get('game_grid', $mapService->getInitialGrid());
+            $score = Cache::get('game_score', 0);
 
-        // Se o Pac-Man comeu algo na posição dele, atualizamos o score e o grid
-        if ($grid[$pacman['y']][$pacman['x']] === 0) {
-            $grid[$pacman['y']][$pacman['x']] = 2;
-            $score += 10;
-            Cache::put('game_grid', $grid, 3600);
-            Cache::put('game_score', $score, 3600);
+            // Calcula próximo passo do fantasma
+            $nextGhostMove = $ghostAI->getNextMove($ghost, $pacman, $grid);
+
+            // Dispara o evento para o Reverb (Porta 8000)
+            // Agora com os 4 parâmetros combinando com o Evento acima
+            broadcast(new GameStateUpdated($pacman, $nextGhostMove, (int)$score, $grid));
+
+            return response()->json(['success' => true]);
+        } catch (\Exception $e) {
+            // Se der erro, ele não "derruba" o servidor, ele te avisa no console
+            return response()->json(['error' => $e->getMessage()], 500);
         }
-
-        // DISPARA O EVENTO (O Reverb na porta 8000 vai receber isso)
-        broadcast(new GameStateUpdated($pacman, $nextGhostMove, $score, $grid));
-
-        return response()->json(['success' => true]);
     }
 }
